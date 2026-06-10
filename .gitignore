@@ -1,0 +1,36 @@
+# Segredos / config local — NUNCA versionar
+.env
+.env.local
+.env.*.local
+.admin-password
+*.key
+*.crt
+*.pem
+*.cert
+
+# Dados de runtime do lego / certificados
+lego/
+lego-staging/
+le_state.json
+
+# Python
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Ferramentas / SO
+.DS_Store
+Thumbs.db
+*.swp
+*.log
+.idea/
+.vscode/
+.cert-api-token
