@@ -9,6 +9,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -169,12 +170,29 @@ def _lego_paths(path):
     return crt, key
 
 
+_LABEL_RE = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?$", re.IGNORECASE)
+
+
+def valid_domain(domain):
+    """Valida domínio (opcionalmente curinga '*.x.y'). Só LDH: letras/dígitos/hífen."""
+    d = domain[2:] if domain.startswith("*.") else domain
+    if not d or len(d) > 253:
+        return False
+    labels = d.split(".")
+    if len(labels) < 2:
+        return False
+    return all(len(lb) <= 63 and _LABEL_RE.fullmatch(lb) for lb in labels)
+
+
 def le_can_issue():
     """Retorna (ok, motivo) — pré-requisitos para emitir."""
     if not CF_TOKEN:
         return False, "Token da Cloudflare ausente (env CLOUDFLARE)."
     if not LE_EMAIL:
         return False, "E-mail do Let's Encrypt ausente (env LE_EMAIL)."
+    if not valid_domain(LE_DOMAIN):
+        return False, (f"LE_DOMAIN inválido: '{LE_DOMAIN}' — use o formato *.seudominio.com "
+                       "(apenas letras, dígitos, hífen e pontos; sem @, espaços ou esquema).")
     if "*" not in LE_DOMAIN and BASE_DOMAIN == "example.com":
         return False, "Domínio não configurado (env LE_DOMAIN)."
     return True, ""

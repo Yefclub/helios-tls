@@ -111,3 +111,22 @@ def test_le_can_issue(monkeypatch):
     monkeypatch.setattr(core, "LE_EMAIL", "")
     ok, why = core.le_can_issue()
     assert not ok and "LE_EMAIL" in why
+
+    # regressão: e-mail colado no lugar do domínio (@ é inválido em hostname)
+    monkeypatch.setattr(core, "LE_EMAIL", "a@b.c")
+    monkeypatch.setattr(core, "LE_DOMAIN", "*.kalyel@example.com")
+    ok, why = core.le_can_issue()
+    assert not ok and "LE_DOMAIN inválido" in why
+
+
+def test_valid_domain():
+    assert core.valid_domain("*.example.com")
+    assert core.valid_domain("example.com")
+    assert core.valid_domain("sub.example.co.uk")
+    assert not core.valid_domain("*.user@example.com")   # @
+    assert not core.valid_domain("exemplo")              # sem TLD
+    assert not core.valid_domain("foo..bar")             # label vazio
+    assert not core.valid_domain("-foo.bar")             # hífen na borda
+    assert not core.valid_domain("https://example.com")  # esquema
+    assert not core.valid_domain("foo .bar")             # espaço
+    assert not core.valid_domain("")
