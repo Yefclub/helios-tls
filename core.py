@@ -181,6 +181,23 @@ def _lego_paths(path):
     return crt, key
 
 
+def data_dir_ok():
+    """(ok, motivo) — /data precisa ser o bind mount do Traefik e ser gravável.
+    Sem isso o cert iria para o filesystem efêmero do container e o Traefik
+    do host nunca veria nada."""
+    if not os.path.isdir(DATA_DIR):
+        return False, (f"Volume não montado: {DATA_DIR} não existe no container. "
+                       "Monte o bind /etc/easypanel/traefik → /data e faça redeploy.")
+    probe = os.path.join(DATA_DIR, ".helios-probe")
+    try:
+        with open(probe, "w") as fh:
+            fh.write("ok")
+        os.remove(probe)
+    except OSError as e:
+        return False, f"Sem permissão de escrita em {DATA_DIR}: {e}"
+    return True, ""
+
+
 _LABEL_RE = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?$", re.IGNORECASE)
 
 
@@ -197,6 +214,9 @@ def valid_domain(domain):
 
 def le_can_issue():
     """Retorna (ok, motivo) — pré-requisitos para emitir."""
+    ok, why = data_dir_ok()
+    if not ok:
+        return False, why
     if not CF_TOKEN:
         return False, "Token da Cloudflare ausente (env CLOUDFLARE)."
     if not LE_EMAIL:

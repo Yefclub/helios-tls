@@ -13,7 +13,7 @@ from flask import Flask, Response, flash, jsonify, redirect, render_template_str
 
 import core
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -33,6 +33,9 @@ app.config.update(
 )
 
 core.reconcile_stale_state()   # restart no meio de emissão não pode virar 'running' eterno
+_data_ok, _data_why = core.data_dir_ok()
+if not _data_ok:
+    log.error(_data_why)
 if os.environ.get("RUN_SCHEDULER", "true").lower() in ("1", "true", "yes"):
     core.start_scheduler()
 
@@ -172,6 +175,10 @@ def index():
 @app.route("/upload", methods=["POST"])
 @login_required
 def upload():
+    ok, why = core.data_dir_ok()
+    if not ok:
+        flash(why, "error")
+        return redirect(url_for("index"))
     crt, key = request.files.get("crt"), request.files.get("key")
     if not crt or not key or crt.filename == "" or key.filename == "":
         flash("Envie os dois arquivos: cadeia (.crt) e chave (.key).", "error")

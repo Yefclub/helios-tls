@@ -119,6 +119,22 @@ def test_le_can_issue(monkeypatch):
     assert not ok and "LE_DOMAIN inválido" in why
 
 
+def test_data_dir_ok():
+    ok, why = core.data_dir_ok()
+    assert ok and why == ""
+
+
+def test_data_dir_missing_blocks_issue(monkeypatch):
+    monkeypatch.setattr(core, "DATA_DIR", os.path.join(core.DATA_DIR, "nao-existe"))
+    ok, why = core.data_dir_ok()
+    assert not ok and "Volume não montado" in why
+
+    monkeypatch.setattr(core, "CF_TOKEN", "tok")
+    monkeypatch.setattr(core, "LE_EMAIL", "a@b.c")
+    ok, why = core.le_can_issue()
+    assert not ok and "Volume não montado" in why
+
+
 def test_valid_domain():
     assert core.valid_domain("*.example.com")
     assert core.valid_domain("example.com")
