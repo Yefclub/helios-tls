@@ -8,6 +8,7 @@ import datetime
 import glob
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -52,6 +53,9 @@ DNS_TYPES = ["A", "AAAA", "CNAME", "TXT", "MX"]
 
 _JOB_LOCK = threading.Lock()
 _zone_id_cache = None
+_state_warned = False
+
+log = logging.getLogger("helios.core")
 
 
 # ---------------------------------------------------------------- cert helpers
@@ -134,10 +138,16 @@ def installed_status():
 
 # ---------------------------------------------------------------- Let's Encrypt
 def le_state():
+    global _state_warned
     try:
         with open(STATE_PATH) as fh:
             return json.load(fh)
-    except Exception:
+    except FileNotFoundError:
+        return {"status": "idle", "message": "", "env": "", "at": ""}
+    except Exception as e:
+        if not _state_warned:           # evita spam (a UI consulta a cada 4s)
+            _state_warned = True
+            log.warning("estado ilegível em %s: %s", STATE_PATH, e)
         return {"status": "idle", "message": "", "env": "", "at": ""}
 
 
@@ -148,8 +158,9 @@ def _set_state(**kw):
     try:
         with open(STATE_PATH, "w") as fh:
             json.dump(st, fh)
-    except Exception:
-        pass
+    except Exception as e:
+        log.error("não consegui gravar o estado em %s: %s — o /data está montado e gravável?",
+                  STATE_PATH, e)
 
 
 def _lego_env():
@@ -209,6 +220,7 @@ def issue_certificate(staging=False):
             return False, why
 
         path = LEGO_PATH_STAGING if staging else LEGO_PATH
+        log.info("emissão iniciada env=%s domínio=%s", "staging" if staging else "prod", LE_DOMAIN)
         _set_state(status="running",
                    message=("Emitindo em staging…" if staging else "Emitindo em produção…"),
                    env=("staging" if staging else "prod"))
@@ -234,6 +246,7 @@ def issue_certificate(staging=False):
                            text=True, timeout=270)
         if p.returncode != 0:
             tail = (p.stderr or p.stdout or "")[-900:]
+            log.error("lego falhou (env=%s): %s", "staging" if staging else "prod", tail)
             _set_state(status="error",
                        message=f"lego falhou: {tail}", env=("staging" if staging else "prod"))
             return False, tail
@@ -261,6 +274,7 @@ def issue_certificate(staging=False):
                        env="prod")
             return True, "sem mudança"
         info = install_cert(crt_b, key_b)
+        log.info("certificado instalado cn=%s expira_em=%s dias", info["cn"], info["days_left"])
         _set_state(status="success",
                    message=f"Certificado emitido e instalado — expira em {info['days_left']} dias.",
                    env="prod", installed_fp=fp,
@@ -280,6 +294,9 @@ def issue_certificate(staging=False):
 def issue_async(staging=False):
     if _JOB_LOCK.locked():
         return False
+    # grava 'running' ANTES da thread: a página recarrega na hora e já mostra o status
+    _set_state(status="running", message="Iniciando emissão…",
+               env=("staging" if staging else "prod"))
     threading.Thread(target=issue_certificate, kwargs={"staging": staging},
                      daemon=True).start()
     return True
@@ -293,9 +310,10 @@ def start_scheduler():
             try:
                 ok, _ = le_can_issue()
                 if ok and _lego_paths(LEGO_PATH)[0]:
+                    log.info("agendador: checando renovação")
                     issue_certificate(staging=False)   # lego renew = no-op se não vencido
-            except Exception:
-                pass
+            except Exception as e:
+                log.error("agendador: %s", e)
             time.sleep(12 * 3600)
     threading.Thread(target=loop, daemon=True).start()
 
@@ -354,15 +372,18 @@ def _record_kwargs(rtype, name, content, ttl, proxied, priority, comment):
 
 def dns_create(rtype, name, content, ttl=1, proxied=False, priority=None, comment=""):
     _cf().dns.records.create(**_record_kwargs(rtype, name, content, ttl, proxied, priority, comment))
+    log.info("DNS create %s %s", rtype.upper(), normalize_name(name))
 
 
 def dns_edit(rid, rtype, name, content, ttl=1, proxied=False, priority=None, comment=""):
     _cf().dns.records.edit(dns_record_id=rid,
                            **_record_kwargs(rtype, name, content, ttl, proxied, priority, comment))
+    log.info("DNS edit %s %s (id=%s)", rtype.upper(), normalize_name(name), rid)
 
 
 def dns_delete(rid):
     _cf().dns.records.delete(dns_record_id=rid, zone_id=zone_id())
+    log.info("DNS delete id=%s", rid)
 
 
 # ---------------------------------------------------------------- API de distribuição

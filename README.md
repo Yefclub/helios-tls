@@ -83,6 +83,7 @@ A aplicação escreve diretamente na pasta do Traefik do Easypanel (montada como
 | `SET_DEFAULT` | — | Instala como cert padrão/catch-all (padrão `true`) |
 | `RUN_SCHEDULER` | — | Liga a auto-renovação (padrão `true`) |
 | `SERVER_LABEL` | — | Rótulo no rodapé |
+| `LOG_LEVEL` | — | Nível de log (`INFO` padrão; `DEBUG` p/ diagnóstico) |
 
 Veja [`.env.example`](.env.example).
 

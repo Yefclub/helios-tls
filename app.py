@@ -3,6 +3,7 @@ Helios TLS — painel para emitir/instalar o certificado curinga no Traefik do
 Easypanel e gerenciar o DNS da Cloudflare.
 """
 import hmac
+import logging
 import os
 import threading
 import time
@@ -12,7 +13,11 @@ from flask import Flask, Response, flash, jsonify, redirect, render_template_str
 
 import core
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
+
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("helios")
 
 APP_USER     = os.environ.get("APP_USER", "admin")
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
@@ -111,6 +116,8 @@ def login():
         with _FAILS_LOCK:
             fails += 1
             _FAILS[ip] = (fails, now + _LOCK_SECS if fails >= _MAX_FAILS else 0.0)
+        log.warning("login falhou ip=%s user=%r (%d/%d)", ip,
+                    request.form.get("user", ""), fails, _MAX_FAILS)
         time.sleep(_FAIL_DELAY)
         flash("Credenciais inválidas. Verifique usuário e senha.", "error")
     return render_template_string(LOGIN_HTML, server=SERVER_NAME)
@@ -140,6 +147,12 @@ FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" 
 def favicon():
     return Response(FAVICON_SVG, mimetype="image/svg+xml",
                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.route("/healthz")
+def healthz():
+    # liveness p/ Docker HEALTHCHECK / Easypanel — sem auth, sem dado sensível
+    return jsonify({"ok": True, "version": __version__})
 
 
 # ---------------------------------------------------------------- dashboard
@@ -701,11 +714,24 @@ document.querySelectorAll('.drop').forEach(function(z){
 document.querySelectorAll('form.upload,form[action="/issue"]').forEach(function(f){
   f.addEventListener('submit',function(){var b=f.querySelector('button');b.classList.add('loading');b.disabled=true;});
 });
+/* status do Let's Encrypt sempre ao vivo (não só quando já carregou 'running') */
 var box=document.getElementById('lebox');
-if(box && box.classList.contains('running')){
-  var t=setInterval(function(){fetch('/issue/status').then(r=>r.json()).then(function(d){
-    document.getElementById('lemsg').textContent=d.message||'';box.className='le-state '+d.status;
-    if(d.status!=='running'){clearInterval(t);setTimeout(()=>location.reload(),1200);}});},4000);
+if(box){
+  var lemsg=document.getElementById('lemsg'),fails=0;
+  var t=setInterval(function(){
+    fetch('/issue/status').then(function(r){
+      if(r.status===401){clearInterval(t);box.className='le-state error';
+        lemsg.textContent='Sessão expirada — recarregue a página e entre de novo.';return null;}
+      return r.json();
+    }).then(function(d){
+      if(!d)return;fails=0;
+      var wasRunning=box.classList.contains('running');
+      box.className='le-state '+d.status;
+      if(d.status==='idle'){lemsg.textContent='Pronto para emitir. Recomendado testar no staging primeiro.';}
+      else{var at=d.at?'  ·  '+new Date(d.at).toLocaleTimeString():'';lemsg.textContent=(d.message||'')+at;}
+      if(wasRunning && d.status!=='running'){clearInterval(t);setTimeout(function(){location.reload();},1200);}
+    }).catch(function(){if(++fails>5)clearInterval(t);});
+  },4000);
 }
 </script></body></html>"""
 

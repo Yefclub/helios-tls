@@ -21,6 +21,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY *.py ./
 
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status==200 else 1)"]
 # 1 worker (agendador de renovação roda 1x) + threads para concorrência;
 # timeout alto cobre a emissão DNS-01; logs no stdout/stderr.
 CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", \

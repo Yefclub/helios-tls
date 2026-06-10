@@ -27,6 +27,20 @@ def test_index_requires_login(client):
     assert "/login" in r.headers["Location"]
 
 
+def test_healthz_public(client):
+    r = client.get("/healthz")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["version"] == appmod.__version__
+
+
+def test_issue_status_requires_login_as_json(client):
+    r = client.get("/issue/status")
+    assert r.status_code == 401
+    assert r.get_json() == {"error": "auth"}
+
+
 def test_login_success(client):
     r = login(client)
     assert r.status_code == 302
