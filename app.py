@@ -13,7 +13,7 @@ from flask import Flask, Response, flash, jsonify, redirect, render_template_str
 
 import core
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -32,6 +32,7 @@ app.config.update(
     MAX_CONTENT_LENGTH=1 * 1024 * 1024,  # uploads são só PEMs pequenos
 )
 
+core.reconcile_stale_state()   # restart no meio de emissão não pode virar 'running' eterno
 if os.environ.get("RUN_SCHEDULER", "true").lower() in ("1", "true", "yes"):
     core.start_scheduler()
 
@@ -204,7 +205,9 @@ def issue():
 @app.route("/issue/status", methods=["GET"])
 @login_required
 def issue_status():
-    return jsonify(core.le_state())
+    st = core.le_state()
+    st["version"] = __version__
+    return jsonify(st)
 
 
 # ---------------------------------------------------------------- DNS manager
@@ -375,7 +378,7 @@ HEAD = """<!doctype html><html lang=pt-br><head><meta charset=utf-8><title>Helio
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?v={{version}}">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#1c1813">
 <script>(function(){try{if(localStorage.getItem('htheme')==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}})();
@@ -384,7 +387,13 @@ function _prog(){var p=document.getElementById('progress');if(!p)return;p.classL
 window.addEventListener('beforeunload',_prog);
 window.addEventListener('pageshow',function(){var p=document.getElementById('progress');if(p){p.classList.remove('go');p.style.width='0';}});
 document.addEventListener('submit',function(e){if(!e.defaultPrevented){_prog();}});
-document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[href]:not([href^="#"]):not([target])');if(a){_prog();}});</script>
+document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[href]:not([href^="#"]):not([target])');if(a){_prog();}});
+/* detector de atualização: imagem nova no servidor != versão desta página */
+var APP_VERSION={{ version|tojson }};
+setInterval(function(){fetch('/healthz').then(function(r){return r.json();}).then(function(d){
+  if(d&&d.version&&d.version!==APP_VERSION){var b=document.getElementById('updbar');
+    if(b&&b.style.display!=='flex'){b.querySelector('b').textContent='v'+d.version;b.style.display='flex';}}
+}).catch(function(){});},60000);</script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#f4f2ee;--surface:#fffefb;--surface-2:#faf8f4;--border:#e9e4db;--border-strong:#ddd6ca;
@@ -518,6 +527,8 @@ dialog[open]{opacity:1;transform:translate(-50%,-50%) scale(1)}
 dialog::backdrop{background:rgba(28,24,19,.4);backdrop-filter:blur(2px)}
 #progress{position:fixed;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,#f6b73c,#e9701f);z-index:99999;opacity:0;transition:width .25s ease,opacity .35s ease;box-shadow:0 0 10px rgba(233,112,31,.55)}
 #progress.go{opacity:1}
+#updbar{display:none;position:fixed;right:18px;bottom:18px;z-index:9998;align-items:center;gap:9px;background:var(--surface);border:1px solid var(--warn-bd);box-shadow:var(--shadow);border-radius:12px;padding:11px 15px;font-size:13px;color:var(--ink)}
+#updbar a{color:var(--sun-2);font-weight:600;text-decoration:none}#updbar a:hover{text-decoration:underline}
 .rcomment{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--ink-2);margin-top:4px;max-width:300px}
 .rcomment span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rcomment svg{flex:none;color:var(--sun-2);opacity:.85}
@@ -557,7 +568,8 @@ dialog::backdrop{background:rgba(28,24,19,.4);backdrop-filter:blur(2px)}
 [data-theme=dark] .tag.CNAME{background:#2a241d;color:#b3a99d}
 [data-theme=dark] .tag.TXT{background:#241a33;color:#bd9fe6}
 [data-theme=dark] .tag.MX{background:#2e2212;color:#d59a4f}
-</style></head><body><div id="progress"></div>"""
+</style></head><body><div id="progress"></div>
+<div id="updbar">☀️ Nova versão <b></b> no servidor — <a href="javascript:location.reload()">recarregar</a></div>"""
 
 MARK = """<svg class="mark" width="34" height="34" viewBox="0 0 34 34" fill="none">
 <circle cx="17" cy="17" r="6.6" fill="url(#hg)"/>
@@ -657,6 +669,7 @@ INDEX_HTML = HEAD + '<div class="wrap">' + NAV + ALERTS + """
       <div class="fact"><span class="k">Provedor DNS</span><span class="v">Cloudflare</span></div>
       <div class="fact"><span class="k">Conta LE</span><span class="v" style="font-size:12px">{{le_email or '—'}}</span></div>
       <div class="fact"><span class="k">Cert padrão</span><span class="v"><span class="badge {{ '' if set_default else 'off' }}">{{ 'sim' if set_default else 'não' }}</span></span></div>
+      <div class="fact"><span class="k">Versão</span><span class="v">v{{version}}</span></div>
     </div>
   </div>
 

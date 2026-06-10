@@ -291,6 +291,16 @@ def issue_certificate(staging=False):
         _JOB_LOCK.release()
 
 
+def reconcile_stale_state():
+    """Reinício no meio de uma emissão deixa 'running' órfão no arquivo — converte
+    em erro claro em vez de mostrar 'emitindo' para sempre."""
+    st = le_state()
+    if st.get("status") == "running":
+        log.warning("estado 'running' órfão de execução anterior — marcando como interrompido")
+        _set_state(status="error",
+                   message="Emissão interrompida por reinício da aplicação — emita novamente.")
+
+
 def issue_async(staging=False):
     if _JOB_LOCK.locked():
         return False

@@ -41,6 +41,24 @@ def test_issue_status_requires_login_as_json(client):
     assert r.get_json() == {"error": "auth"}
 
 
+def test_issue_status_includes_version(client):
+    login(client)
+    r = client.get("/issue/status")
+    assert r.status_code == 200
+    assert r.get_json()["version"] == appmod.__version__
+
+
+def test_reconcile_stale_running_state():
+    core._set_state(status="running", message="Emitindo…", env="prod")
+    core.reconcile_stale_state()
+    st = core.le_state()
+    assert st["status"] == "error"
+    assert "interrompida" in st["message"]
+    # idempotente: estado não-running fica como está
+    core.reconcile_stale_state()
+    assert core.le_state()["status"] == "error"
+
+
 def test_login_success(client):
     r = login(client)
     assert r.status_code == 302
