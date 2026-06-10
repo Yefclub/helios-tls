@@ -49,6 +49,7 @@ jobs:
           ignore-unfixed: true
           exit-code: '1'
           format: table
+          trivyignores: .trivyignore
 
   trivy-image:
     name: Trivy (imagem)
@@ -63,6 +64,7 @@ jobs:
           ignore-unfixed: true
           exit-code: '1'
           format: table
+          trivyignores: .trivyignore
 
   dependency-review:
     name: Dependency Review

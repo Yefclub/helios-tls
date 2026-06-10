@@ -1,0 +1,6 @@
+# CVE-2026-42504 — Go stdlib 1.26.3 (decode de MIME header malicioso)
+# Origem: binário `lego` v5.2.2 (release upstream compilada com Go 1.26.3).
+# Ainda não existe release do lego com Go >= 1.26.4. O lego é cliente ACME
+# e não decodifica MIME de fontes não confiáveis neste uso.
+# Remover quando sair lego > v5.2.2 (bump de LEGO_VERSION no Dockerfile).
+CVE-2026-42504
