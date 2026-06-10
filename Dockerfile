@@ -6,7 +6,9 @@ ARG TARGETARCH=amd64
 WORKDIR /app
 
 # lego (cliente ACME para emissão DNS-01) — binário único
+# (upgrade: a base slim costuma trazer CVEs do Debian já corrigidos nos repos)
 RUN apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends curl ca-certificates \
  && curl -fsSL "https://github.com/go-acme/lego/releases/download/${LEGO_VERSION}/lego_${LEGO_VERSION}_linux_${TARGETARCH}.tar.gz" -o /tmp/lego.tgz \
  && tar -xzf /tmp/lego.tgz -C /usr/local/bin lego \
