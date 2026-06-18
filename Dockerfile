@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ARG LEGO_VERSION=v5.2.2
 # preenchido pelo buildx (amd64 | arm64); default p/ docker build sem buildkit
