@@ -325,16 +325,31 @@ def install_cert(crt_bytes, key_bytes, apex=None):
     return install_cert_for_zone(zone.apex, crt_bytes, key_bytes)
 
 
+def _cert_pair_paths(apex=None):
+    """Caminhos do par da zona, ou (None, None) se essa zona não tem arquivos.
+
+    O fallback para wildcard.crt legado vale só para a zona padrão.
+    """
+    try:
+        zone = resolve_zone(apex) if (apex or configured_zones()) else None
+    except ValueError:
+        return None, None
+    if zone:
+        crt_p, key_p = zone_cert_paths(zone.apex)
+        if os.path.exists(crt_p) and os.path.exists(key_p):
+            return crt_p, key_p
+        if zone.is_default and os.path.exists(CRT_PATH) and os.path.exists(KEY_PATH):
+            return CRT_PATH, KEY_PATH
+        return None, None
+    if os.path.exists(CRT_PATH) and os.path.exists(KEY_PATH):
+        return CRT_PATH, KEY_PATH
+    return None, None
+
+
 def installed_status(apex=None):
     """Status do cert de uma zona. Sem apex = zona padrão (ou wildcard legado)."""
-    try:
-        zone = resolve_zone(apex) if apex or configured_zones() else None
-    except ValueError:
-        zone = None
-    path = zone_cert_paths(zone.apex)[0] if zone else CRT_PATH
-    if not os.path.exists(path):
-        path = CRT_PATH
-    if not os.path.exists(path):
+    path, _ = _cert_pair_paths(apex)
+    if not path:
         return None
     try:
         with open(path, "rb") as fh:
@@ -683,16 +698,9 @@ def dns_delete(rid, apex=None):
 # ---------------------------------------------------------------- API de distribuição
 def cert_files(apex=None):
     """Retorna (fullchain_bytes, key_bytes) do certificado da zona, ou (None, None)."""
-    try:
-        zone = resolve_zone(apex)
-        crt_p, key_p = zone_cert_paths(zone.apex)
-    except ValueError:
-        crt_p, key_p = CRT_PATH, KEY_PATH
-    if not (os.path.exists(crt_p) and os.path.exists(key_p)):
-        if os.path.exists(CRT_PATH) and os.path.exists(KEY_PATH):
-            crt_p, key_p = CRT_PATH, KEY_PATH
-        else:
-            return None, None
+    crt_p, key_p = _cert_pair_paths(apex)
+    if not crt_p or not key_p:
+        return None, None
     with open(crt_p, "rb") as f:
         crt = f.read()
     with open(key_p, "rb") as f:

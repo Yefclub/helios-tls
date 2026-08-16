@@ -1,4 +1,5 @@
 import pytest
+from conftest import make_cert_pair
 
 import app as appmod
 import core
@@ -149,3 +150,26 @@ def test_api_with_valid_token(client, monkeypatch, cert_pair):
     r = client.get("/api/cert/install.sh", headers=h)
     assert r.status_code == 200
     assert b"/api/cert" in r.data
+
+
+def test_api_info_other_zone_without_cert_is_503(client, monkeypatch):
+    monkeypatch.setattr(core, "CERT_API_TOKEN", "tok123")
+    monkeypatch.setattr(core, "LE_DOMAIN", "*.alpha.test")
+    monkeypatch.setattr(core, "LE_DOMAINS", "beta.test")
+    monkeypatch.setattr(core, "SET_DEFAULT", True)
+    a_crt, a_key = make_cert_pair(cn="*.alpha.test", sans=("*.alpha.test", "alpha.test"))
+    core.install_cert_for_zone("alpha.test", a_crt, a_key)
+    h = {"Authorization": "Bearer tok123"}
+
+    r = client.get("/api/cert/info?domain=beta.test", headers=h)
+    assert r.status_code == 503
+    assert b"Sem certificado" in r.data
+
+    r = client.get("/api/cert/fullchain.pem?domain=beta.test", headers=h)
+    assert r.status_code == 503
+
+    r = client.get("/api/cert/info?domain=alpha.test", headers=h)
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["cn"] == "*.alpha.test"
+    assert body["zone"] == "alpha.test"

@@ -241,6 +241,51 @@ def test_normalize_name_uses_chosen_apex():
     assert core.normalize_name("www.beta.example", "beta.example") == "www.beta.example"
 
 
+def _patch_two_zone_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(core, "LE_DOMAIN", "*.alpha.test")
+    monkeypatch.setattr(core, "LE_DOMAINS", "beta.test")
+    monkeypatch.setattr(core, "LE_DEFAULT_ZONE", "")
+    monkeypatch.setattr(core, "SET_DEFAULT", True)
+    monkeypatch.setattr(core, "CERTS_DIR", str(tmp_path / "certs"))
+    monkeypatch.setattr(core, "CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setattr(core, "CUSTOM_YAML", str(tmp_path / "config" / "custom.yaml"))
+    monkeypatch.setattr(core, "CRT_PATH", str(tmp_path / "certs" / "wildcard.crt"))
+    monkeypatch.setattr(core, "KEY_PATH", str(tmp_path / "certs" / "wildcard.key"))
+    monkeypatch.setattr(core, "DEFAULT_CRT", str(tmp_path / "default.cert"))
+    monkeypatch.setattr(core, "DEFAULT_KEY", str(tmp_path / "default.key"))
+
+
+def test_missing_zone_files_do_not_inherit_default_cert(tmp_path, monkeypatch):
+    _patch_two_zone_paths(tmp_path, monkeypatch)
+    a_crt, a_key = make_cert_pair(cn="*.alpha.test", sans=("*.alpha.test", "alpha.test"))
+    core.install_cert_for_zone("alpha.test", a_crt, a_key)
+
+    assert core.installed_status("beta.test") is None
+    assert core.cert_files("beta.test") == (None, None)
+    assert core.cert_api_info("beta.test") is None
+
+    rows = {r["zone"].apex: r["status"] for r in core.installed_zones_status()}
+    assert rows["alpha.test"]["cn"] == "*.alpha.test"
+    assert rows["beta.test"] is None
+    assert core.cert_api_info("alpha.test")["cn"] == "*.alpha.test"
+    assert core.cert_api_info("alpha.test")["zone"] == "alpha.test"
+
+
+def test_legacy_wildcard_fallback_only_for_default_zone(tmp_path, monkeypatch):
+    _patch_two_zone_paths(tmp_path, monkeypatch)
+    os.makedirs(core.CERTS_DIR, exist_ok=True)
+    a_crt, a_key = make_cert_pair(cn="*.alpha.test", sans=("*.alpha.test", "alpha.test"))
+    with open(core.CRT_PATH, "wb") as fh:
+        fh.write(a_crt)
+    with open(core.KEY_PATH, "wb") as fh:
+        fh.write(a_key)
+
+    assert core.installed_status("alpha.test")["cn"] == "*.alpha.test"
+    assert core.installed_status()["cn"] == "*.alpha.test"
+    assert core.installed_status("beta.test") is None
+    assert core.cert_files("beta.test") == (None, None)
+
+
 def test_valid_domain():
     assert core.valid_domain("*.example.com")
     assert core.valid_domain("example.com")

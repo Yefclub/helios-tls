@@ -13,7 +13,7 @@ from flask import Flask, Response, flash, jsonify, redirect, render_template_str
 
 import core
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
