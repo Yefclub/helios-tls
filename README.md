@@ -78,7 +78,9 @@ A aplicação escreve diretamente na pasta do Traefik do Easypanel (montada como
 | `SECRET_KEY` | ✅ | Segredo da sessão Flask |
 | `CLOUDFLARE` | ✅ | Token de API da Cloudflare |
 | `LE_EMAIL` | ✅ | E-mail da conta Let's Encrypt |
-| `LE_DOMAIN` | ✅ | Domínio curinga, ex. `*.seudominio.com` |
+| `LE_DOMAIN` | ✅ | Primeira zona (curinga), ex. `*.seudominio.com` — também é o catch-all se `SET_DEFAULT=true` |
+| `LE_DOMAINS` | — | Zonas extras (apex ou `*.zona`), separadas por vírgula. Cada uma ganha cert + SNI próprios |
+| `LE_DEFAULT_ZONE` | — | Apex que escreve `default.cert` (catch-all). Padrão: a zona de `LE_DOMAIN` |
 | `LE_RESOLVERS` | — | Resolvers p/ checagem de propagação (padrão `1.1.1.1:53,8.8.8.8:53`) |
 | `SET_DEFAULT` | — | Instala como cert padrão/catch-all (padrão `true`) |
 | `RUN_SCHEDULER` | — | Liga a auto-renovação (padrão `true`) |
@@ -108,6 +110,7 @@ ghcr.io/yefclub/helios-tls:latest
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
 export APP_PASSWORD=teste CLOUDFLARE=token LE_EMAIL=... LE_DOMAIN='*.seudominio.com'
+# opcional: LE_DOMAINS='rastrofit.com'
 python app.py   # http://localhost:8080
 
 pytest          # testes

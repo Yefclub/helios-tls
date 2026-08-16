@@ -13,7 +13,7 @@ from flask import Flask, Response, flash, jsonify, redirect, render_template_str
 
 import core
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -33,6 +33,10 @@ app.config.update(
 )
 
 core.reconcile_stale_state()   # restart no meio de emissão não pode virar 'running' eterno
+try:
+    core.migrate_legacy_wildcard()
+except Exception as e:
+    log.warning("migração do wildcard legado: %s", e)
 _data_ok, _data_why = core.data_dir_ok()
 if not _data_ok:
     log.error(_data_why)
@@ -153,23 +157,55 @@ def favicon():
                    headers={"Cache-Control": "public, max-age=86400"})
 
 
+def _zone_from_request():
+    raw = (request.args.get("zone") or request.args.get("domain")
+           or request.form.get("zone") or request.form.get("domain") or "")
+    raw = raw.strip()
+    if not raw:
+        z = core.default_zone()
+        return z.apex if z else None
+    try:
+        return core.resolve_zone(raw).apex
+    except ValueError:
+        return raw
+
+
 @app.route("/healthz")
 def healthz():
     # liveness p/ Docker HEALTHCHECK / Easypanel — sem auth, sem dado sensível
-    return jsonify({"ok": True, "version": __version__})
+    return jsonify({"ok": True, "version": __version__,
+                    "zones": [z.apex for z in core.configured_zones()]})
 
 
 # ---------------------------------------------------------------- dashboard
 @app.route("/", methods=["GET"])
 @login_required
 def index():
-    can, why = core.le_can_issue()
+    apex = None
+    try:
+        apex = _zone_from_request()
+        if apex:
+            apex = core.resolve_zone(apex).apex
+    except ValueError:
+        apex = core.default_zone().apex if core.default_zone() else None
+    can, why = core.le_can_issue(apex)
+    zones_view = []
+    for item in core.installed_zones_status():
+        z = item["zone"]
+        zones_view.append({
+            "apex": z.apex,
+            "wildcard": z.wildcard,
+            "is_default": z.is_default,
+            "status": item["status"],
+        })
     return render_template_string(
         INDEX_HTML, active="home", server=SERVER_NAME,
-        status=core.installed_status(), le=core.le_state(),
+        status=core.installed_status(apex), le=core.le_state(apex),
         le_domain=core.LE_DOMAIN, le_email=core.LE_EMAIL,
         can_issue=can, why=why, set_default=core.SET_DEFAULT,
-        api_enabled=bool(core.CERT_API_TOKEN), api_base=_api_base())
+        api_enabled=bool(core.CERT_API_TOKEN), api_base=_api_base(),
+        zones=zones_view, current_zone=apex,
+        zone_errors=core.zone_parse_errors())
 
 
 @app.route("/upload", methods=["POST"])
@@ -183,37 +219,45 @@ def upload():
     if not crt or not key or crt.filename == "" or key.filename == "":
         flash("Envie os dois arquivos: cadeia (.crt) e chave (.key).", "error")
         return redirect(url_for("index"))
+    apex = _zone_from_request()
     try:
-        info = core.install_cert(crt.read(), key.read())
+        info = core.install_cert(crt.read(), key.read(), apex=apex)
     except Exception as e:
         flash(f"Falha: {e}", "error")
-        return redirect(url_for("index"))
+        return redirect(url_for("index", zone=apex or ""))
     flash(f"Certificado instalado — válido por mais {info['days_left']} dias.", "ok")
     if not info["is_wildcard"]:
         flash("O certificado não parece ser curinga (sem SAN *.dominio).", "warn")
-    return redirect(url_for("index"))
+    return redirect(url_for("index", zone=apex or ""))
 
 
 @app.route("/issue", methods=["POST"])
 @login_required
 def issue():
     staging = request.form.get("env") == "staging"
-    can, why = core.le_can_issue()
+    apex = _zone_from_request()
+    can, why = core.le_can_issue(apex)
     if not can:
         flash(why, "error")
-        return redirect(url_for("index"))
-    if not core.issue_async(staging=staging):
+        return redirect(url_for("index", zone=apex or ""))
+    if not core.issue_async(staging=staging, apex=apex):
         flash("Já existe uma emissão em andamento.", "warn")
     else:
         flash("Emissão iniciada — acompanhe o status abaixo.", "ok")
-    return redirect(url_for("index"))
+    return redirect(url_for("index", zone=apex or ""))
 
 
 @app.route("/issue/status", methods=["GET"])
 @login_required
 def issue_status():
-    st = core.le_state()
+    apex = _zone_from_request()
+    try:
+        apex = core.resolve_zone(apex).apex if apex else None
+    except ValueError:
+        apex = None
+    st = core.le_state(apex)
     st["version"] = __version__
+    st["zone"] = apex
     return jsonify(st)
 
 
@@ -222,52 +266,66 @@ def issue_status():
 @login_required
 def dns():
     records, err = [], None
+    apex = _zone_from_request()
     try:
-        records = core.dns_list()
+        apex = core.resolve_zone(apex).apex
+        records = core.dns_list(apex)
     except Exception as e:
         err = str(e)
-    return render_template_string(DNS_HTML, active="dns", server=SERVER_NAME,
-                                  records=records, err=err, base=core.BASE_DOMAIN,
-                                  types=core.DNS_TYPES, proxiable=list(core.PROXIABLE))
+        try:
+            apex = core.resolve_zone(apex).apex
+        except Exception:
+            z = core.default_zone()
+            apex = z.apex if z else ""
+    return render_template_string(
+        DNS_HTML, active="dns", server=SERVER_NAME,
+        records=records, err=err, base=apex,
+        types=core.DNS_TYPES, proxiable=list(core.PROXIABLE),
+        zones=core.configured_zones(), current_zone=apex)
 
 
 @app.route("/dns/create", methods=["POST"])
 @login_required
 def dns_create():
     f = request.form
+    apex = _zone_from_request()
     try:
         core.dns_create(f["type"], f["name"].strip(), f["content"].strip(),
                         ttl=f.get("ttl", 1), proxied=f.get("proxied") == "on",
-                        priority=f.get("priority"), comment=f.get("comment", "").strip())
+                        priority=f.get("priority"), comment=f.get("comment", "").strip(),
+                        apex=apex)
         flash(f"Registro {f['type']} '{f['name']}' criado.", "ok")
     except Exception as e:
         flash(f"Erro ao criar registro: {e}", "error")
-    return redirect(url_for("dns"))
+    return redirect(url_for("dns", zone=apex or ""))
 
 
 @app.route("/dns/edit", methods=["POST"])
 @login_required
 def dns_edit():
     f = request.form
+    apex = _zone_from_request()
     try:
         core.dns_edit(f["id"], f["type"], f["name"].strip(), f["content"].strip(),
                       ttl=f.get("ttl", 1), proxied=f.get("proxied") == "on",
-                      priority=f.get("priority"), comment=f.get("comment", "").strip())
+                      priority=f.get("priority"), comment=f.get("comment", "").strip(),
+                      apex=apex)
         flash(f"Registro '{f['name']}' atualizado.", "ok")
     except Exception as e:
         flash(f"Erro ao atualizar: {e}", "error")
-    return redirect(url_for("dns"))
+    return redirect(url_for("dns", zone=apex or ""))
 
 
 @app.route("/dns/delete", methods=["POST"])
 @login_required
 def dns_delete():
+    apex = _zone_from_request()
     try:
-        core.dns_delete(request.form["id"])
+        core.dns_delete(request.form["id"], apex=apex)
         flash("Registro excluído.", "ok")
     except Exception as e:
         flash(f"Erro ao excluir: {e}", "error")
-    return redirect(url_for("dns"))
+    return redirect(url_for("dns", zone=apex or ""))
 
 
 # ---------------------------------------------------------------- API de distribuição
@@ -306,7 +364,7 @@ def api_cert_info():
     g = _api_guard()
     if g:
         return g
-    info = core.cert_api_info()
+    info = core.cert_api_info(_zone_from_request())
     if not info:
         return Response("Sem certificado instalado.\n", 503, mimetype="text/plain")
     return jsonify(info)
@@ -317,7 +375,7 @@ def api_cert_fullchain():
     g = _api_guard()
     if g:
         return g
-    crt, _ = core.cert_files()
+    crt, _ = core.cert_files(_zone_from_request())
     if not crt:
         return Response("Sem certificado.\n", 503, mimetype="text/plain")
     return _pem(crt, "fullchain.pem")
@@ -328,7 +386,7 @@ def api_cert_privkey():
     g = _api_guard()
     if g:
         return g
-    _, key = core.cert_files()
+    _, key = core.cert_files(_zone_from_request())
     if not key:
         return Response("Sem certificado.\n", 503, mimetype="text/plain")
     return _pem(key, "privkey.pem", sensitive=True)
@@ -339,7 +397,7 @@ def api_cert_bundle():
     g = _api_guard()
     if g:
         return g
-    crt, key = core.cert_files()
+    crt, key = core.cert_files(_zone_from_request())
     if not crt:
         return Response("Sem certificado.\n", 503, mimetype="text/plain")
     return _pem(crt.rstrip() + b"\n" + key, "bundle.pem", sensitive=True)
@@ -623,9 +681,24 @@ LOGIN_HTML = HEAD + '<div class="wrap narrow"><div class="topbar"><div class="br
 INDEX_HTML = HEAD + '<div class="wrap">' + NAV + ALERTS + """
 <div class="grid">
 
+  {% if zone_errors %}
+  <div class="col-12">{% for e in zone_errors %}<div class="alert warn" style="margin-bottom:8px">{{e}}</div>{% endfor %}</div>
+  {% endif %}
+
+  {% if zones and zones|length > 1 %}
+  <div class="card col-12 tight">
+    <div class="eyebrow">Zonas</div>
+    <div class="chips" style="margin-top:10px">{% for z in zones %}
+      <a class="chip" href="/?zone={{z.apex}}" style="text-decoration:none;{% if z.apex==current_zone %}border-color:var(--sun-2);color:var(--sun-2);font-weight:600{% endif %}">
+        {{z.wildcard}}{% if z.is_default %} · padrão{% endif %}{% if z.status %} · {{z.status.days_left}}d{% else %} · sem cert{% endif %}
+      </a>
+    {% endfor %}</div>
+  </div>
+  {% endif %}
+
   {% if status %}
   <div class="card col-12">
-    <div class="eyebrow">Certificado ativo no Traefik</div>
+    <div class="eyebrow">Certificado ativo no Traefik{% if current_zone %} · {{current_zone}}{% endif %}</div>
     <div class="hero">
       <div class="left">
         <div class="status-head">
@@ -651,16 +724,16 @@ INDEX_HTML = HEAD + '<div class="wrap">' + NAV + ALERTS + """
   <div class="card col-8">
     <div class="eyebrow">Let's Encrypt · curinga automático</div>
     <h1>Emitir via DNS-01</h1>
-    <p class="lead">Gera <code>{{le_domain}}</code> validando por DNS na Cloudflare — sem expor o servidor.</p>
+    <p class="lead">Gera <code>{{current_zone and ('*.' + current_zone) or le_domain}}</code> validando por DNS na Cloudflare — sem expor o servidor.</p>
     {% if not can_issue %}
     <div class="le-state error"><span class="dot"></span><span>{{why}}</span></div>
     {% else %}
     <div id="lebox" class="le-state {{le.status}}"><span class="dot"></span>
       <span id="lemsg">{% if le.status=='idle' %}Pronto para emitir. Recomendado testar no staging primeiro.{% else %}{{le.message}}{% endif %}</span></div>
     <div class="row" style="margin-top:16px">
-      <form method="post" action="/issue"><input type="hidden" name="env" value="staging"><input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <form method="post" action="/issue"><input type="hidden" name="env" value="staging"><input type="hidden" name="zone" value="{{current_zone or ''}}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}">
         <button class="btn ghost full" type="submit">Testar no staging</button></form>
-      <form method="post" action="/issue"><input type="hidden" name="env" value="prod"><input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <form method="post" action="/issue"><input type="hidden" name="env" value="prod"><input type="hidden" name="zone" value="{{current_zone or ''}}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}">
         <button class="btn full" type="submit">Emitir / Renovar produção</button></form>
     </div>
     {% endif %}
@@ -672,7 +745,8 @@ INDEX_HTML = HEAD + '<div class="wrap">' + NAV + ALERTS + """
     <div class="eyebrow">Configuração</div>
     <div class="facts">
       <div class="fact"><span class="k">Auto-renovação</span><span class="v"><span class="badge"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>ativa</span></span></div>
-      <div class="fact"><span class="k">Domínio</span><span class="v">{{le_domain}}</span></div>
+      <div class="fact"><span class="k">Zona ativa</span><span class="v">{{current_zone or le_domain}}</span></div>
+      <div class="fact"><span class="k">Zonas</span><span class="v">{{zones|length}}</span></div>
       <div class="fact"><span class="k">Provedor DNS</span><span class="v">Cloudflare</span></div>
       <div class="fact"><span class="k">Conta LE</span><span class="v" style="font-size:12px">{{le_email or '—'}}</span></div>
       <div class="fact"><span class="k">Cert padrão</span><span class="v"><span class="badge {{ '' if set_default else 'off' }}">{{ 'sim' if set_default else 'não' }}</span></span></div>
@@ -708,6 +782,7 @@ TOKEN=$TOKEN DEST=/etc/ssl/helios RELOAD_CMD="systemctl reload nginx" /usr/local
     <p class="lead">Já tem o certificado emitido? Envie a cadeia e a chave.</p>
     <form class="upload" method="post" action="/upload" enctype="multipart/form-data">
       <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="zone" value="{{current_zone or ''}}">
       <div class="row" style="margin-top:14px">
         <label class="drop" id="d-crt"><input type="file" name="crt" accept=".crt,.pem,.cer,.txt" hidden>
           <span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15l2 2 4-4"/></svg></span>
@@ -739,7 +814,7 @@ var box=document.getElementById('lebox');
 if(box){
   var lemsg=document.getElementById('lemsg'),fails=0;
   var t=setInterval(function(){
-    fetch('/issue/status').then(function(r){
+    fetch('/issue/status?zone='+encodeURIComponent({{ current_zone|tojson }}||'')).then(function(r){
       if(r.status===401){clearInterval(t);box.className='le-state error';
         lemsg.textContent='Sessão expirada — recarregue a página e entre de novo.';return null;}
       return r.json();
@@ -770,11 +845,21 @@ DNS_HTML = HEAD + '<div class="wrap">' + NAV + ALERTS + """
     <div class="stat"><div class="n">{{cnt.MX}}</div><div class="l">MX</div></div>
   </div>
 
+  {% if zones and zones|length > 1 %}
+  <div class="card col-12 tight">
+    <div class="eyebrow">Zona DNS</div>
+    <div class="chips" style="margin-top:10px">{% for z in zones %}
+      <a class="chip" href="/dns?zone={{z.apex}}" style="text-decoration:none;{% if z.apex==current_zone %}border-color:var(--sun-2);color:var(--sun-2);font-weight:600{% endif %}">{{z.apex}}</a>
+    {% endfor %}</div>
+  </div>
+  {% endif %}
+
   <div class="card col-12">
     <div class="eyebrow">Novo registro</div>
     {% if err %}<div class="le-state error" style="margin-top:12px"><span class="dot"></span><span>{{err}}</span></div>{% endif %}
     <form method="post" action="/dns/create" id="createForm" style="margin-top:14px">
       <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="zone" value="{{current_zone or base}}">
       <div class="row" style="align-items:flex-end">
         <div style="flex:0 1 110px"><span class="flabel">Tipo</span><div class="input"><select name="type" id="ctype">{% for t in types %}<option>{{t}}</option>{% endfor %}</select></div></div>
         <div style="flex:2 1 210px"><span class="flabel">Nome (subdomínio)</span><div class="input"><input name="name" id="cname" placeholder="subdominio  ·  @ p/ raiz" required oninput="syncSuffix(this,csuf)" autocomplete="off"><span class="suffix" id="csuf">.{{base}}</span></div></div>
@@ -811,6 +896,7 @@ DNS_HTML = HEAD + '<div class="wrap">' + NAV + ALERTS + """
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
         <form method="post" action="/dns/delete" onsubmit="return confirm('Excluir {{r.type}} {{r.name}}?')" style="display:inline">
           <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="zone" value="{{current_zone or base}}">
           <input type="hidden" name="id" value="{{r.id}}">
           <button class="iconbtn danger" title="Excluir" type="submit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></form>
       </div></td>
@@ -825,6 +911,7 @@ DNS_HTML = HEAD + '<div class="wrap">' + NAV + ALERTS + """
 <dialog id="editDlg"><form method="post" action="/dns/edit" class="dlg">
   <h3>Editar registro</h3><p class="lead" id="edlabel"></p>
   <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="zone" value="{{current_zone or base}}">
   <input type="hidden" name="id" id="eid">
   <div class="row" style="margin-top:16px">
     <div style="flex:0 1 120px"><span class="flabel">Tipo</span><div class="input"><select name="type" id="etype">{% for t in types %}<option>{{t}}</option>{% endfor %}</select></div></div>
